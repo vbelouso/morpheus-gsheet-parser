@@ -5,6 +5,7 @@ from itertools import chain
 from http import HTTPStatus
 import requests
 from packageurl import PackageURL
+import reports_parser
 
 # Supported Languages
 SUPPORTED_LANGUAGES = [
@@ -321,11 +322,11 @@ def send_request_to_morpheus(request):
         return False
 
 def process_requests_from_cves(cves_file):
-    # 1. Read the JSON file
+    # Read the JSON file
     with open(cves_file, "r") as f:
         cves_data = json.load(f)
 
-    # 2. Process each table
+    # Process each table
     for table_name, entries in cves_data.items():
         for entry in entries:
             try:
@@ -353,7 +354,7 @@ def process_requests_from_cves(cves_file):
                     entry["report_id"] = request_json["scan"]["id"]
                     with open(cves_file, 'w') as file:
                         json.dump(cves_data, file, indent=2)
-
+                reports_parser.process_report(request_json["scan"]["id"])
             except FileNotFoundError:
                 print(f"SBOM file not found: {entry['sbom_file']}")
             except json.JSONDecodeError:

@@ -73,7 +73,7 @@ def wait_for_report(report_id):
     return None
 
 
-def process_reports():
+def process_all_reports():
     with open("cves.json", 'r') as f:
         cves_data = json.load(f)
 
@@ -93,14 +93,23 @@ def process_reports():
             else:
                 print(f"Failed to get report {report_id}, moving to next entry")
 
+def process_report(report_id):
+    print(f"Processing report ID: {report_id}")
+    report = wait_for_report(report_id)
 
-def main():
-    try:
-        process_reports()
-    except Exception as e:
-        print(f"Error: {e}")
-        raise
+    if report:
+        save_report(report, report_id)
+        print(f"Successfully processed report {report_id}")
+    else:
+        print(f"Failed to get report {report_id}, moving to next entry")
 
-
-if __name__ == "__main__":
-    main()
+# def main():
+#     try:
+#         process_reports()
+#     except Exception as e:
+#         print(f"Error: {e}")
+#         raise
+#
+#
+# if __name__ == "__main__":
+#     main()
