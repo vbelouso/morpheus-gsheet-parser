@@ -1,10 +1,26 @@
-# Overview
+# README
 
 ## Prerequisites
 
-Credentials file `account.json`
+### Required Environment Variables
 
-## Create virtual environment
+The application uses the following environment variables, which can be configured using a `.env` file or the `export` command:
+
+- `MORPHEUS_API_URL` *(required)* - The API endpoint for Morpheus.
+- `MORPHEUS_TOKEN` *(required)* - The authentication token retrieved from the OpenShift console.
+- `GOOGLE_SPREADSHEET_ID` *(required)* - Google Sheet Spreadsheet ID.
+- `GOOGLE_WORKSHEET_ID` *(required)* - Google Sheet Worksheet ID.
+- `GOOGLE_CREDENTIALS_FILE` *(optional, default: account.json)* - Google service account credentials file path.
+- `MAX_RETRIES` *(optional, default: 60)* - Maximum number of requests retries before timing out.
+- `RETRY_INTERVAL` *(optional, default: 30)* - The interval in seconds between request retries.
+
+### Credentials
+
+- A credentials file named `account.json` is required for Google Sheet parsing.
+
+## Setup
+
+### Create Virtual Environment
 
 ```bash
 python -m venv .venv
@@ -12,75 +28,71 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run GSheet parser
+## Flow Overview
+
+The workflow consists of two main steps:
+
+1. **Run the Google Sheet parser** - Generates SBOM files.
+2. **Run the SBOM processor** - Sends SBOM data to Morpheus and retrieves reports.
+
+## Step 1: Run Google Sheet Parser
 
 ```bash
-python main_json.py
+python generate_sboms.py
 ```
 
-Logs:
+### Expected Output
 
-```text
-Intermediate data saved to cves.json
-Processing table1: CVE-2024-0406
-Successfully generated SBOM for registry.redhat.io/openshift4/oc-mirror-plugin-rhel8@sha256:ee166a7a362c2144f088413cc8cccaded88913e80c2db11ab5e291a69485f91a
-Processing table2: CVE-2024-1485
-Successfully generated SBOM for registry.redhat.io/openshift4/ose-console:v4.15.0-202409180905.p0.gf6f61ca.assembly.stream.el8
-```
+- **Logs:**
 
-Expected output:
+  ```text
+  Intermediate data saved to cves.json
+  Processing table1: CVE-2024-0406
+  Successfully generated SBOM for registry.redhat.io/openshift4/oc-mirror-plugin-rhel8@sha256:...
+  Processing table2: CVE-2024-1485
+  Successfully generated SBOM for registry.redhat.io/openshift4/ose-console:v4.15.0-...
+  ```
 
-* The `sboms` folder with SBOM files.
-* The `cves.json` intermediate file.
+- **Generated Files:**
+  - `sboms/` - folder containing SBOM JSON files.
+  - `cves.json` - intermediate file storing SBOM references
 
-```json
-{
-  "table1": [
-    {
-      "cve": "CVE-2024-0406",
-      "image": "registry.redhat.io/openshift4/oc-mirror-plugin-rhel8@sha256:ee166a7a362c2144f088413cc8cccaded88913e80c2db11ab5e291a69485f91a",
-      "sbom_file": "sboms/registry.redhat.io_openshift4_oc_mirror_plugin_rhel8_sha256_ee166a7a362c2144f088413cc8cccaded88913e80c2db11ab5e291a69485f91a.sbom.json"
-    }
-  ],
-  "table2": [
-    {
-      "cve": "CVE-2024-1485",
-      "image": "registry.redhat.io/openshift4/ose-console:v4.15.0-202409180905.p0.gf6f61ca.assembly.stream.el8",
-      "sbom_file": "sboms/registry.redhat.io_openshift4_ose_console_v4.15.0_202409180905.p0.gf6f61ca.assembly.stream.el8.sbom.json"
-    }
-  ]
-}
-```
+  ```json
+  {
+    "table1": [
+      {
+        "cve": "CVE-2024-0406",
+        "image": "registry.redhat.io/...",
+        "sbom_file": "sboms/..."
+      }
+    ],
+    "table2": [
+      {
+        "cve": "CVE-2024-1485",
+        "image": "registry.redhat.io/...",
+        "sbom_file": "sboms/..."
+      }
+    ]
+  }
+  ```
 
-## Run SBOM generator
+## Step 2: Run SBOM Processor
 
 ```bash
-python sbom_json.py
+python process_reports.py
 ```
 
-Expected output:
+### Expected Output
 
-* The `requests` folder with JSON requests files.
+- **Logs:**
 
-## Run reports parser
+  ```text
+  Processing table1 with batch mp-xxxxx
+  Checking batch mp-xxxxx
+  Downloading report for id: 67b490148788114dd8df4c98
+  Successfully saved report 67b490148788114dd8df4c98 -> outputs/67b490148788114dd8df4c98.json
+  ```
 
-```bash
-python reports_parser.py
-```
-
-Expected output:
-
-* The `outputs` folder with Morpheus reports.
-
-Logs:
-
-```text
-Processing report ID: c16503ed-90c2-4624-bc18-b4b09c79f122
-Report c16503ed-90c2-4624-bc18-b4b09c79f122 is available
-Report saved: outputs/c16503ed-90c2-4624-bc18-b4b09c79f122.json
-Successfully processed report c16503ed-90c2-4624-bc18-b4b09c79f122
-Processing report ID: f1f356c3-4e3b-4b4a-a3d8-2687c04219ed
-Report f1f356c3-4e3b-4b4a-a3d8-2687c04219ed is available
-Report saved: outputs/f1f356c3-4e3b-4b4a-a3d8-2687c04219ed.json
-Successfully processed report f1f356c3-4e3b-4b4a-a3d8-2687c04219ed
-```
+- **Generated Files:**
+  - `requests/` folder containing JSON request files.
+  - `outputs/` folder containing processed Morpheus reports.
