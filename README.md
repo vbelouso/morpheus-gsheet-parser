@@ -13,6 +13,8 @@ The application uses the following environment variables, which can be configure
 - `GOOGLE_CREDENTIALS_FILE` *(optional, default: account.json)* - Google service account credentials file path.
 - `MAX_RETRIES` *(optional, default: 60)* - Maximum number of requests retries before timing out.
 - `RETRY_INTERVAL` *(optional, default: 30)* - The interval in seconds between request retries.
+- `PROCESS_ITERATIONS` *(optional, default: 10)* - Defines how many times items should be processed in each cycle.
+- `SKIP_PROCESSED_ITEMS` *(optional, default: true)* - Skip already processed items when running the script again.
 
 ### Credentials
 
