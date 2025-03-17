@@ -1,17 +1,48 @@
 import json
+import logging
+import os
+import subprocess
+import sys
+
 import gspread
 import pandas as pd
-import subprocess
-import os
+from dotenv import load_dotenv
 
-# Ensure the sboms folder exists
-os.makedirs("sboms", exist_ok=True)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-# Google Sheets Setup
-gc = gspread.service_account(filename="account.json")
-sh = gc.open_by_key("1SUTbTVTEaF7H5t3qQ6d9ftIjNx-eRjMDTArEBto_niw")
-worksheet = sh.worksheet("Categorized Data")
-all_rows = worksheet.get_all_values()
+# Load environment variables
+load_dotenv()
+
+
+def configure_google_sheet():
+    required_vars = ["GOOGLE_SPREADSHEET_ID", "GOOGLE_WORKSHEET_ID"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+
+    if missing_vars:
+        logger.error(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
+        sys.exit(1)
+
+    credentials_file = os.getenv("GOOGLE_CREDENTIALS_FILE", "account.json")
+
+    if not os.path.isfile(credentials_file):
+        logger.error(f"Google Credentials file '{credentials_file}' not found.")
+        sys.exit(1)
+
+    try:
+        gc = gspread.service_account(filename=credentials_file)
+        sh = gc.open_by_key(os.getenv("GOOGLE_SPREADSHEET_ID"))
+        worksheet = sh.worksheet(os.getenv("GOOGLE_WORKSHEET_ID"))
+        return worksheet.get_all_values()
+    except Exception as e:
+        logger.error(f"Failed to configure Google Sheets: {e}")
+        sys.exit(1)
+
 
 # Function to extract a table starting from a specific header keyword
 def extract_table(rows, start_keyword):
@@ -42,8 +73,11 @@ def extract_table(rows, start_keyword):
     df = df[df["CVE"].str.match(r"^CVE-", na=False)]
 
     return df
+
+
 def sanitize_filename(image):
     return image.replace("/", "_").replace(":", "_").replace("@", "_").replace("-", "_")
+
 
 # Function to generate JSON structure for a single table
 def generate_table_json(table):
@@ -51,22 +85,13 @@ def generate_table_json(table):
     for _, row in table.iterrows():
         separator = "@" if row["Tag"].startswith("sha256") else ":"
         image = f"registry.redhat.io/{row['Component']}{separator}{row['Tag']}"
-        sbom_file = os.path.join(
-            "sboms",
-            f"{sanitize_filename(image)}.sbom.json"
-        )
-        json_data.append({
-            "cve": row["CVE"],
-            "image": image,
-            "sbom_file": sbom_file
-        })
+        sbom_file = os.path.join("sboms", f"{sanitize_filename(image)}.sbom.json")
+        json_data.append({"cve": row["CVE"], "image": image, "sbom_file": sbom_file})
     return json_data
 
+
 def run_syft(image, output_format="cyclonedx-json"):
-    output_file = os.path.join(
-        "sboms",
-        f"{sanitize_filename(image)}.sbom.json"
-    )
+    output_file = os.path.join("sboms", f"{sanitize_filename(image)}.sbom.json")
     command = [
         "syft",
         image,
@@ -77,16 +102,21 @@ def run_syft(image, output_format="cyclonedx-json"):
     ]
 
     try:
-        subprocess.run(command, check=True, text=True, timeout=300)
-        print(f"Successfully generated SBOM for {image}")
+        subprocess.run(
+            command, check=True, text=True, timeout=300, stderr=subprocess.PIPE
+        )
+        logger.info(f"Successfully generated SBOM for {image}")
         return output_file
     except subprocess.CalledProcessError as e:
-        print(f"Error running Syft for {image}: {e}")
+        logger.error(f"Error running Syft for {image}: {e}")
         return None
 
 
 # Main logic
-def process_data():
+def process_data(all_rows):
+    if not all_rows:
+        logger.error("No data found in the Google Sheet.")
+        sys.exit(1)
     # Extract tables from Google Sheets
     table1 = extract_table(all_rows, "CVE")  # First table
     table2 = extract_table(all_rows[4:], "CVE")  # Second table
@@ -96,22 +126,27 @@ def process_data():
     table2_json = generate_table_json(table2)
 
     # Combine into the required structure
-    combined_json = {
-        "table1": table1_json,
-        "table2": table2_json
-    }
+    combined_json = {"table1": table1_json, "table2": table2_json}
 
     # Save to a JSON file
     json_file = "cves.json"
     with open(json_file, "w") as f:
         json.dump(combined_json, f, indent=2)
-    print(f"Intermediate data saved to {json_file}")
+    logger.info(f"Intermediate data saved to {json_file}")
 
     # Process each table
     for table_name, entries in combined_json.items():
         for entry in entries:
-            print(f"Processing {table_name}: {entry['cve']}")
+            logger.info(f"Processing {table_name}: {entry['cve']}")
             run_syft(entry["image"])
 
-# Run the main process
-process_data()
+
+def main():
+    # Ensure the sboms folder exists
+    os.makedirs("sboms", exist_ok=True)
+    all_rows = configure_google_sheet()
+    process_data(all_rows)
+
+
+if __name__ == "__main__":
+    main()
