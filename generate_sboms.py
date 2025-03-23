@@ -39,8 +39,18 @@ def configure_google_sheet():
         sh = gc.open_by_key(os.getenv("GOOGLE_SPREADSHEET_ID"))
         worksheet = sh.worksheet(os.getenv("GOOGLE_WORKSHEET_ID"))
         return worksheet.get_all_values()
+    except PermissionError:
+        with open(credentials_file) as f:
+            service_email = json.load(f).get("client_email", "unknown")
+        logger.error(
+            f"Permission denied: share the spreadsheet with the service account '{service_email}'"
+        )
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Failed to configure Google Sheets: {e}")
+        logger.error(
+            f"Failed to configure Google Sheets: {e}",
+            exc_info=True,
+        )
         sys.exit(1)
 
 
