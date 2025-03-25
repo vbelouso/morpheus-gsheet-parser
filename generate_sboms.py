@@ -3,6 +3,9 @@ import logging
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 import gspread
 import pandas as pd
@@ -10,87 +13,125 @@ from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("generate_sboms.log")
+    ]
 )
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
+@dataclass
+class GoogleSheetConfig:
+    spreadsheet_id: str
+    worksheet_id: str
+    credentials_file: str
 
-def configure_google_sheet():
-    required_vars = ["GOOGLE_SPREADSHEET_ID", "GOOGLE_WORKSHEET_ID"]
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-
-    if missing_vars:
-        logger.error(
-            f"Missing required environment variables: {', '.join(missing_vars)}"
+    @classmethod
+    def from_env(cls) -> 'GoogleSheetConfig':
+        required_vars = ["GOOGLE_SPREADSHEET_ID", "GOOGLE_WORKSHEET_ID"]
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+            
+        return cls(
+            spreadsheet_id=os.getenv("GOOGLE_SPREADSHEET_ID"),
+            worksheet_id=os.getenv("GOOGLE_WORKSHEET_ID"),
+            credentials_file=os.getenv("GOOGLE_CREDENTIALS_FILE", "account.json")
         )
-        sys.exit(1)
 
-    credentials_file = os.getenv("GOOGLE_CREDENTIALS_FILE", "account.json")
-
-    if not os.path.isfile(credentials_file):
-        logger.error(f"Google Credentials file '{credentials_file}' not found.")
-        sys.exit(1)
+def configure_google_sheet(config: GoogleSheetConfig) -> List[List[str]]:
+    """Configure and connect to Google Sheets.
+    
+    Args:
+        config: Google Sheets configuration
+        
+    Returns:
+        List of rows from the worksheet
+        
+    Raises:
+        FileNotFoundError: If credentials file is not found
+        PermissionError: If service account lacks permissions
+        Exception: For other Google Sheets API errors
+    """
+    if not os.path.isfile(config.credentials_file):
+        raise FileNotFoundError(f"Google Credentials file '{config.credentials_file}' not found.")
 
     try:
-        gc = gspread.service_account(filename=credentials_file)
-        sh = gc.open_by_key(os.getenv("GOOGLE_SPREADSHEET_ID"))
-        worksheet = sh.worksheet(os.getenv("GOOGLE_WORKSHEET_ID"))
+        gc = gspread.service_account(filename=config.credentials_file)
+        sh = gc.open_by_key(config.spreadsheet_id)
+        worksheet = sh.worksheet(config.worksheet_id)
         return worksheet.get_all_values()
-    except PermissionError:
-        with open(credentials_file) as f:
+    except PermissionError as e:
+        with open(config.credentials_file) as f:
             service_email = json.load(f).get("client_email", "unknown")
-        logger.error(
+        raise PermissionError(
             f"Permission denied: share the spreadsheet with the service account '{service_email}'"
-        )
-        sys.exit(1)
+        ) from e
     except Exception as e:
-        logger.error(
-            f"Failed to configure Google Sheets: {e}",
-            exc_info=True,
-        )
-        sys.exit(1)
+        raise Exception(f"Failed to configure Google Sheets: {e}") from e
 
-
-# Function to extract a table starting from a specific header keyword
-def extract_table(rows, start_keyword):
+def extract_table(rows: List[List[str]], start_keyword: str) -> pd.DataFrame:
+    """Extract a table starting from a specific header keyword.
+    
+    Args:
+        rows: List of rows from the worksheet
+        start_keyword: Keyword to identify the header row
+        
+    Returns:
+        DataFrame containing the extracted table
+        
+    Raises:
+        ValueError: If header keyword is not found
+    """
     header_row_index = None
 
-    # Locate the header dynamically based on the keyword
     for i, row in enumerate(rows):
-        if start_keyword in row:  # Look for the keyword in the row
+        if start_keyword in row:
             header_row_index = i
             break
 
     if header_row_index is None:
         raise ValueError(f"Header '{start_keyword}' not found in the sheet!")
 
-    # Extract the header and data starting from the next row
     header = rows[header_row_index]
     data = []
 
-    for row in rows[header_row_index + 1 :]:
+    for row in rows[header_row_index + 1:]:
         if not any(row):  # Stop at the first empty row
             break
         data.append(row)
 
-    # Convert to a DataFrame
     df = pd.DataFrame(data, columns=header)
-
-    # Filter rows where CVE starts with "CVE-" using regex
     df = df[df["CVE"].str.match(r"^CVE-", na=False)]
 
     return df
 
-
-def sanitize_filename(image):
+def sanitize_filename(image: str) -> str:
+    """Sanitize image name for use as filename.
+    
+    Args:
+        image: Docker image name
+        
+    Returns:
+        Sanitized filename
+    """
     return image.replace("/", "_").replace(":", "_").replace("@", "_").replace("-", "_")
 
-
-# Function to generate JSON structure for a single table
-def generate_table_json(table):
+def generate_table_json(table: pd.DataFrame) -> List[Dict[str, str]]:
+    """Generate JSON structure for a single table.
+    
+    Args:
+        table: DataFrame containing the table data
+        
+    Returns:
+        List of dictionaries with CVE, image and SBOM file information
+    """
     json_data = []
     for _, row in table.iterrows():
         separator = "@" if row["Tag"].startswith("sha256") else ":"
@@ -99,8 +140,16 @@ def generate_table_json(table):
         json_data.append({"cve": row["CVE"], "image": image, "sbom_file": sbom_file})
     return json_data
 
-
-def run_syft(image, output_format="cyclonedx-json"):
+def run_syft(image: str, output_format: str = "cyclonedx-json") -> Optional[str]:
+    """Run Syft to generate SBOM for an image.
+    
+    Args:
+        image: Docker image to analyze
+        output_format: Output format for SBOM
+        
+    Returns:
+        Path to generated SBOM file or None if generation failed
+    """
     output_file = os.path.join("sboms", f"{sanitize_filename(image)}.sbom.json")
     command = [
         "syft",
@@ -121,12 +170,18 @@ def run_syft(image, output_format="cyclonedx-json"):
         logger.error(f"Error running Syft for {image}: {e}")
         return None
 
-
-# Main logic
-def process_data(all_rows):
+def process_data(all_rows: List[List[str]]) -> None:
+    """Process data from Google Sheets and generate SBOMs.
+    
+    Args:
+        all_rows: List of rows from the worksheet
+        
+    Raises:
+        ValueError: If no data is found in the sheet
+    """
     if not all_rows:
-        logger.error("No data found in the Google Sheet.")
-        sys.exit(1)
+        raise ValueError("No data found in the Google Sheet.")
+        
     # Extract tables from Google Sheets
     table1 = extract_table(all_rows, "CVE")  # First table
     table2 = extract_table(all_rows[4:], "CVE")  # Second table
@@ -150,13 +205,20 @@ def process_data(all_rows):
             logger.info(f"Processing {table_name}: {entry['cve']}")
             run_syft(entry["image"])
 
-
-def main():
-    # Ensure the sboms folder exists
-    os.makedirs("sboms", exist_ok=True)
-    all_rows = configure_google_sheet()
-    process_data(all_rows)
-
+def main() -> None:
+    """Main entry point."""
+    try:
+        # Ensure the sboms folder exists
+        os.makedirs("sboms", exist_ok=True)
+        
+        # Configure and process data
+        config = GoogleSheetConfig.from_env()
+        all_rows = configure_google_sheet(config)
+        process_data(all_rows)
+        
+    except Exception as e:
+        logger.error(f"Failed to process data: {e}", exc_info=False)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

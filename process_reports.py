@@ -22,7 +22,9 @@ from requests.adapters import HTTPAdapter
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("process_reports.log")],
 )
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,7 @@ class ReportStatus(Enum):
     PROCESSING = ("[yellow]⧖ PROCESSING[/yellow]", False)
     COMPLETE = ("[green]✓ COMPLETE[/green]", True)
     TIMEOUT = ("[red]TIMEOUT[/red]", True)
+    EXPIRED = ("[red]⚠ EXPIRED[/red]", True)
 
     def __init__(self, display: str, is_final: bool):
         self.display = display
@@ -138,6 +141,8 @@ class MorpheusClient:
         Returns:
             ReportStatus: Current status of the report
         """
+        if report.get("state") == "expired":
+            return ReportStatus.EXPIRED
         if not report.get("completedAt"):
             if retry_count > self.config.max_retries:
                 return ReportStatus.TIMEOUT
@@ -172,6 +177,10 @@ class MorpheusClient:
             response = self.session.post(
                 url=url, json=payload, headers=self._get_headers()
             )
+            if response.status_code == HTTPStatus.UNAUTHORIZED:
+                self.logger.error("Unauthorized request: invalid or missing token.")
+                sys.exit(1)
+
             response.raise_for_status()
 
             response_data = response.json()
@@ -393,15 +402,16 @@ def process_requests_from_cves(client: MorpheusClient, cves_file: str) -> bool:
 
     try:
         with open(cves_file, "r") as f:
-            cves_data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        logger.error(f"Error reading CVEs file: {e}")
-        return
-    except json.JSONDecodeError:
-        logger.error(f"Invalid JSON format in CVEs file: {cves_file}")
+            try:
+                cves_data = json.load(f)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON format in CVEs file: {cves_file}")
+                return False
+    except FileNotFoundError:
+        logger.error(f"CVEs file not found: {cves_file}")
         return False
     except Exception as e:
-        logger.error(f"Error reading CVEs file: {e}")
+        logger.error(f"Unexpected error reading CVEs file: {e}")
         return False
 
     sent_requests = []
