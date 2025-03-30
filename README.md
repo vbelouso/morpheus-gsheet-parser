@@ -4,7 +4,8 @@
 
 ### Required Environment Variables
 
-The application uses the following environment variables, which can be configured using a `.env` file or the `export` command:
+The application uses the following environment variables, which can be configured using a `.env` file or the `export`
+command:
 
 - `MORPHEUS_API_URL` *(required)* - The API endpoint for Morpheus.
 - `MORPHEUS_TOKEN` *(required)* - The authentication token retrieved from the OpenShift console.
@@ -48,11 +49,11 @@ python generate_sboms.py
 - **Logs:**
 
   ```text
-  Intermediate data saved to cves.json
-  Processing table1: CVE-2024-0406
-  Successfully generated SBOM for registry.redhat.io/openshift4/oc-mirror-plugin-rhel8@sha256:...
-  Processing table2: CVE-2024-1485
-  Successfully generated SBOM for registry.redhat.io/openshift4/ose-console:v4.15.0-...
+  INFO - Intermediate data saved to cves.json
+  INFO - Processing CVE-2024-29180
+  INFO - Successfully generated SBOM for registry.redhat.io/openshift4/ose-monitoring-plugin-rhel9@sha256:ba11e2b3b1c0543adc06d851e773fdf156ffb19c8bed6fa0feb8ac15f0c4b3ee
+  INFO - Processing CVE-2024-28863
+  INFO - Successfully generated SBOM for registry.redhat.io/openshift4/ose-console-rhel9@sha256:2c4607db175cd663c27fad6a300a6a4947c08725b10f1034c9f313f966bfcbe3
   ```
 
 - **Generated Files:**
@@ -60,22 +61,18 @@ python generate_sboms.py
   - `cves.json` - intermediate file storing SBOM references
 
   ```json
-  {
-    "table1": [
+    [
       {
-        "cve": "CVE-2024-0406",
-        "image": "registry.redhat.io/...",
-        "sbom_file": "sboms/..."
-      }
-    ],
-    "table2": [
+        "cve": "CVE-2024-29180",
+        "image": "registry.redhat.io/openshift4/ose-monitoring-plugin-rhel9@sha256:ba11e2b3b1c0543adc06d851e773fdf156ffb19c8bed6fa0feb8ac15f0c4b3ee",
+        "sbom_file": "sboms/registry.redhat.io_openshift4_ose_monitoring_plugin_rhel9_sha256_ba11e2b3b1c0543adc06d851e773fdf156ffb19c8bed6fa0feb8ac15f0c4b3ee.sbom.json"
+      },
       {
-        "cve": "CVE-2024-1485",
-        "image": "registry.redhat.io/...",
-        "sbom_file": "sboms/..."
+        "cve": "CVE-2024-28863",
+        "image": "registry.redhat.io/openshift4/ose-console-rhel9@sha256:2c4607db175cd663c27fad6a300a6a4947c08725b10f1034c9f313f966bfcbe3",
+        "sbom_file": "sboms/registry.redhat.io_openshift4_ose_console_rhel9_sha256_2c4607db175cd663c27fad6a300a6a4947c08725b10f1034c9f313f966bfcbe3.sbom.json"
       }
     ]
-  }
   ```
 
 ## Step 2: Run SBOM Processor
@@ -89,10 +86,15 @@ python process_reports.py
 - **Logs:**
 
   ```text
-  Processing table1 with batch mp-xxxxx
-  Checking batch mp-xxxxx
-  Downloading report for id: 67b490148788114dd8df4c98
-  Successfully saved report 67b490148788114dd8df4c98 -> outputs/67b490148788114dd8df4c98.json
+  INFO - Starting iteration 1 of 1
+  INFO - Processing CVE-2024-29180 with batch mp-745i5h
+  INFO - Processing CVE-2024-28863 with batch mp-745i5h
+  INFO - Updated CVE data saved after processing
+  INFO - Checking batch mp-745i5h
+  INFO - Downloading report for id: 67e921d7fced9a53db7713b7
+  INFO - Successfully saved report 67e921d7fced9a53db7713b7 -> outputs/67e921d7fced9a53db7713b7.json
+  INFO - Completed 1 iterations successfully
+
   ```
 
 - **Generated Files:**

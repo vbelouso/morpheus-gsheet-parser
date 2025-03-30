@@ -20,19 +20,26 @@ from urllib3.util import Retry
 import requests
 from requests.adapters import HTTPAdapter
 
-# Configure logging
+# Constants
+OUTPUTS_DIR = Path("outputs")
+REQUESTS_DIR = Path("requests")
+LOG_FILE = Path("process_reports.log")
+CVE_JSON_FILE = Path("cves.json")
+HTTP_TIMEOUT = 60
+DEFAULT_MAX_RETRIES = 60
+DEFAULT_RETRY_INTERVAL = 30
+DEFAULT_PROCESS_ITERATIONS = 10
+
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("process_reports.log")],
+    handlers=[logging.StreamHandler(), logging.FileHandler(str(LOG_FILE), mode="w")],
 )
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
-
-OUTPUTS_DIR = Path("outputs")
-REQUESTS_DIR = Path("requests")
 
 
 @dataclass
@@ -68,9 +75,11 @@ class MorpheusConfig:
         return cls(
             token=os.getenv("MORPHEUS_TOKEN"),
             api_url=os.getenv("MORPHEUS_API_URL"),
-            max_retries=int(os.getenv("MAX_RETRIES", "60")),
-            retry_interval=int(os.getenv("RETRY_INTERVAL", "30")),
-            process_iterations=int(os.getenv("PROCESS_ITERATIONS"), 10),
+            max_retries=int(os.getenv("MAX_RETRIES", DEFAULT_MAX_RETRIES)),
+            retry_interval=int(os.getenv("RETRY_INTERVAL", DEFAULT_RETRY_INTERVAL)),
+            process_iterations=int(
+                os.getenv("PROCESS_ITERATIONS"), DEFAULT_PROCESS_ITERATIONS
+            ),
             skip_processed_items=os.getenv("SKIP_PROCESSED_ITEMS", "true").lower()
             == "true",
         )
@@ -87,6 +96,20 @@ class ReportStatus(Enum):
     def __init__(self, display: str, is_final: bool):
         self.display = display
         self.is_final = is_final
+
+
+def _generate_table() -> Table:
+    """
+    Create a table for displaying report status.
+
+    Returns:
+        Table: Formatted rich Table
+    """
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Report ID")
+    table.add_column("Status")
+    table.add_column("Retry")
+    return table
 
 
 class MorpheusClient:
@@ -149,19 +172,6 @@ class MorpheusClient:
             return ReportStatus.PROCESSING
         return ReportStatus.COMPLETE
 
-    def _generate_table(self) -> Table:
-        """
-        Create a table for displaying report status.
-
-        Returns:
-            Table: Formatted rich Table
-        """
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("Report ID")
-        table.add_column("Status")
-        table.add_column("Retry")
-        return table
-
     def send_request(self, payload: Dict) -> Optional[Dict]:
         """
         Send a request to the Morpheus API.
@@ -213,7 +223,7 @@ class MorpheusClient:
         retries: Dict[str, int] = {}
         self.logger.info(f"Checking batch {batch_id}")
 
-        with Live(self._generate_table(), refresh_per_second=5) as live:
+        with Live(_generate_table(), refresh_per_second=5) as live:
             while True:
                 try:
                     response = self.session.get(
@@ -223,7 +233,7 @@ class MorpheusClient:
                     response.raise_for_status()
                     reports = response.json()
 
-                    table = self._generate_table()
+                    table = _generate_table()
                     incomplete = False
 
                     for report in reports:
@@ -271,9 +281,7 @@ class MorpheusClient:
                     self.logger.error(f"Error fetching batch reports: {e}")
                     return None
 
-    def download_successful_reports(
-        self, cves_data: Dict[str, List[Dict[str, Any]]]
-    ) -> int:
+    def download_successful_reports(self, cves_data: List[Dict[str, Any]]) -> int:
         """
         Download reports for successful requests.
 
@@ -285,31 +293,28 @@ class MorpheusClient:
         """
         download_count = 0
 
-        for table_name, entries in cves_data.items():
-            for entry in entries:
-                report_id = entry.get("id")
-                if not report_id:
-                    self.logger.warning(
-                        f"Skipping entry in {table_name}, no 'id' found."
+        for entry in cves_data:
+            report_id = entry.get("id")
+            if not report_id:
+                self.logger.warning("Skipping entry, no 'id' found.")
+                continue
+
+            self.logger.info(f"Downloading report for id: {report_id}")
+            report = self.get_report_by_id(report_id)
+
+            if report:
+                output_file = OUTPUTS_DIR / f"{report_id}.json"
+                try:
+                    with open(output_file, "w") as file:
+                        json.dump(report, file, indent=2)
+                    self.logger.info(
+                        f"Successfully saved report {report_id} -> {output_file}"
                     )
-                    continue
-
-                self.logger.info(f"Downloading report for id: {report_id}")
-                report = self.get_report_by_id(report_id)
-
-                if report:
-                    output_file = OUTPUTS_DIR / f"{report_id}.json"
-                    try:
-                        with open(output_file, "w") as file:
-                            json.dump(report, file, indent=2)
-                        self.logger.info(
-                            f"Successfully saved report {report_id} -> {output_file}"
-                        )
-                        download_count += 1
-                    except Exception as e:
-                        self.logger.error(f"Error saving report {report_id}: {e}")
-                else:
-                    self.logger.error(f"Failed to download report {report_id}")
+                    download_count += 1
+                except Exception as e:
+                    self.logger.error(f"Error saving report {report_id}: {e}")
+            else:
+                self.logger.error(f"Failed to download report {report_id}")
 
         return download_count
 
@@ -325,7 +330,9 @@ class MorpheusClient:
         """
         url = f"{self.config.api_url}/reports/{report_id}"
         try:
-            response = self.session.get(url, headers=self._get_headers(), timeout=60)
+            response = self.session.get(
+                url, headers=self._get_headers(), timeout=HTTP_TIMEOUT
+            )
             if response.status_code in (
                 HTTPStatus.NOT_FOUND,
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -387,7 +394,7 @@ def build_request_json(
     }
 
 
-def process_requests_from_cves(client: MorpheusClient, cves_file: str) -> bool:
+def process_requests_from_cves(client: MorpheusClient, cves_file: Path) -> bool:
     """
     Process requests from CVE data file.
 
@@ -398,7 +405,6 @@ def process_requests_from_cves(client: MorpheusClient, cves_file: str) -> bool:
     Returns:
         bool: True if successful, False otherwise
     """
-    logger = logging.getLogger(__name__)
 
     try:
         with open(cves_file, "r") as f:
@@ -415,60 +421,52 @@ def process_requests_from_cves(client: MorpheusClient, cves_file: str) -> bool:
         return False
 
     sent_requests = []
+    table_requests = []
+    batch_id = generate_batch_id()
 
-    for table_name, entries in cves_data.items():
-        batch_id = generate_batch_id()
-        logger.info(f"Processing table {table_name} with batch {batch_id}")
+    for entry in cves_data:
+        logger.info(f"Processing {entry['cve']} with batch {batch_id}")
 
         table_requests = []
-
-        for entry in entries:
-            if (
-                client.config.skip_processed_items
-                and "id" in entry
-                and "report_id" in entry
-            ):
-                logger.info(f"Skipping {entry['cve']} - already processed.")
-                continue
-
-            try:
-                with open(entry["sbom_file"], "r") as sbom:
-                    sbom_data = json.load(sbom)
-
-                vulns = entry["cve"]
-                request_json = build_request_json(
-                    data=sbom_data, vulns=vulns, batch_id=batch_id
-                )
-
-                request_file = REQUESTS_DIR / f"{request_json['id']}.json"
-                with open(request_file, "w") as f:
-                    json.dump(request_json, f, indent=2)
-
-                response_data = client.send_request(request_json)
-                if response_data:
-                    sent_requests.append(response_data["id"])
-                    table_requests.append(response_data["id"])
-
-                    entry["id"] = response_data["id"]
-                    entry["report_id"] = response_data["reportId"]
-                else:
-                    logger.error(f"Failed to send request for {entry['cve']}")
-            except FileNotFoundError:
-                logger.error(f"SBOM file not found: {entry['sbom_file']}")
-            except json.JSONDecodeError:
-                logger.error(f"Invalid JSON format in SBOM file: {entry['sbom_file']}")
-            except Exception as e:
-                logger.error(f"Unexpected error processing {entry['sbom_file']}: {e}")
         try:
-            with open(cves_file, "w") as file:
-                json.dump(cves_data, file, indent=2)
-            logger.info(f"Updated CVE data saved after processing {table_name}")
-        except Exception as e:
-            logger.error(f"Error saving updated CVE data: {e}")
+            sbom_file_path = Path(entry["sbom_file"])
+            with open(sbom_file_path, "r") as sbom:
+                sbom_data = json.load(sbom)
 
-        # Get batch reports
-        if table_requests:
-            client.get_batch_reports(batch_id)
+            vulns = entry["cve"]
+            request_json = build_request_json(
+                data=sbom_data, vulns=vulns, batch_id=batch_id
+            )
+
+            request_file = REQUESTS_DIR / f"{request_json['id']}.json"
+            with open(request_file, "w") as f:
+                json.dump(request_json, f, indent=2)
+
+            response_data = client.send_request(request_json)
+            if response_data:
+                sent_requests.append(response_data["id"])
+                table_requests.append(response_data["id"])
+
+                entry["id"] = response_data["id"]
+                entry["report_id"] = response_data["reportId"]
+            else:
+                logger.error(f"Failed to send request for {entry['cve']}")
+        except FileNotFoundError:
+            logger.error(f"SBOM file not found: {entry['sbom_file']}")
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON format in SBOM file: {entry['sbom_file']}")
+        except Exception as e:
+            logger.error(f"Unexpected error processing {entry['sbom_file']}: {e}")
+    try:
+        with open(cves_file, "w") as file:
+            json.dump(cves_data, file, indent=2)
+        logger.info("Updated CVE data saved after processing")
+    except Exception as e:
+        logger.error(f"Error saving updated CVE data: {e}")
+
+    # Get batch reports
+    if table_requests:
+        client.get_batch_reports(batch_id)
 
     # Download reports
     client.download_successful_reports(cves_data)
@@ -486,8 +484,7 @@ def main():
             logger.info(
                 f"Starting iteration {iteration} of {config.process_iterations}"
             )
-            process_requests_from_cves(client, cves_file="cves.json")
-
+            process_requests_from_cves(client, cves_file=CVE_JSON_FILE)
             # Sleep between iterations to avoid overwhelming the server
             if iteration < config.process_iterations:
                 time.sleep(5)
