@@ -219,10 +219,22 @@ def process_data(all_rows: List[List[str]]) -> None:
         json.dump(table_json, f, indent=2)
     logger.info(f"Intermediate data saved to {CVE_JSON_FILE}")
 
+    processed_images = set()
     # Process each table
     for entry in table_json:
-        logger.info(f"Processing {entry['cve']}")
-        run_syft(entry["image"])
+        image = entry["image"]
+        logger.info(f"Processing {entry['cve']} with image {image}")
+        if image in processed_images:
+            logger.info(f"Image {image} already processed, skipping SBOM generation")
+            continue
+        result = run_syft(entry["image"])
+        if result:
+            processed_images.add(image)
+            logger.info(
+                f"Added {image} to processed images set (total: {len(processed_images)})"
+            )
+        else:
+            logger.warning(f"Failed to generate SBOM for {image}")
 
 
 def main() -> None:
